@@ -5,7 +5,7 @@ from joueur.base_ai import BaseAI
 # <<-- Creer-Merge: imports -->> - Code you add between this comment and the end comment will be preserved between Creer re-runs.
 # you can add additional import(s) here
 
-from colorama import init, Fore, Back, Style
+#from colorama import init, Fore, Back, Style
 import heapq
 import time
 
@@ -17,14 +17,14 @@ counters = {"intern":"manager", "physicist":"intern", "manager":"physicist"} # m
 countered_by = {"manager":"intern", "intern":"physicist", "physicist":"manager"} # intern is countered_by[manager]
 
 def radius(tile, r=1):
-    frontier = [tile]
+    frontier = {tile}
     tiles = set()
     while r >= 0:
         r -= 1
         tiles |= frontier
         if r >= 0:
             for t in frontier:
-                frontier = t.get_neighbors()
+                frontier = set(t.get_neighbors())
     return tiles
 
 def manhattan(t1, t2):
@@ -104,46 +104,49 @@ class AI(BaseAI):
         cost = dict()
         for tile in self.game.tiles:
             cost[tile] = 0
+        for tile in self.game.tiles:
             if tile.unit and tile.unit.owner != self.player:
                 for t in radius(tile, 5):
-                    cost[tile] += 1 if counters[tile.unit.job.title] == unit.job.title else -1 if countered_by[tile.unit.job.title] == unit.job.title else 0
-                    
+                    cost[t] += 2/(1+manhattan(t,tile)) * (1 if counters[tile.unit.job.title] == unit.job.title else -1 if countered_by[tile.unit.job.title] == unit.job.title else 0)
+                    cost[t] += (tile.unit.health-unit.health)/(1+manhattan(t,tile))
+            elif tile.unit and tile.unit != unit:
+                for t in radius(tile, 6):
+                    cost[t] += -1/(1+manhattan(t,tile))
+            if unit.job.title == "physicist":
+                if tile.machine:
+                    for t in radius(tile, 6):
+                        cost[t] -= (unit.redium_ore+unit.blueium_ore)/(1+manhattan(t,tile))/15
+            if unit.job.title == "intern":
+                if tile.blueium_ore or tile.redium_ore:
+                    for t in radius(tile, 6):
+                        cost[t] -= (tile.redium_ore*(1+self.player.pressure-self.player.heat)+tile.blueium_ore*(1+self.player.heat-self.player.pressure))/(1+manhattan(t,tile))/15
+            if unit.job.title == "manager":
+                if tile.blueium or tile.redium or tile.machine:
+                    for t in radius(tile, 6):
+                        cost[t] -= 3/(1+manhattan(t,tile))
+        mx = max(cost.values())
+        mn = min(cost.values())
 
-    def act(self, unit, enable_attack=True):
+        for tile in cost:
+            cost[tile] = (cost[tile] - mn)/(mx-mn)
+        return cost
+
+    def free_actions(self, unit):
         if unit.acted:
             return True
-        if unit.job.title == 'physicist':
-            for t in unit.tile.get_neighbors() + [unit.tile]:
-                if t.machine and t.blueium_ore + t.redium_ore >= t.machine.refine_input and unit.act(t):
-                    while not unit.acted and t.blueium_ore + t.redium_ore >= t.machine.refine_input:
-                        unit.act(t)
-                    return True
-                if t.unit and t.unit.owner != unit.owner and t.unit.health > 0:
-                    if (t.unit.job.title == "manager" and t.unit.stun_time == 0 and t.unit.stun_immune == 0 and unit.act(t)):
-                        if unit.acted:
-                            return True
-                    if (enable_attack and unit.moves >= unit.job.moves and unit.attack(t)):
-                        return True
-        elif unit.job.title == 'intern':
-            for t in unit.tile.get_neighbors() + [unit.tile]:
+        for t in unit.tile.get_neighbors() + [unit.tile]:
+            if unit.job.title == 'intern':
                 if t.owner != self.player.opponent and t.machine:
                     if unit.blueium_ore > 0 and t.machine.ore_type == "blueium" and unit.drop(t, 0, 'blueium ore'):
                         pass
                     if unit.redium_ore > 0 and t.machine.ore_type == "redium" and unit.drop(t, 0, 'redium ore'):
                         pass
-                if (t.owner == self.player.opponent or not t.machine) and unit.blueium_ore + unit.redium_ore < unit.job.carry_limit:
+                if not t.machine and unit.blueium_ore + unit.redium_ore < unit.job.carry_limit:
                     if t.blueium_ore > 0 and unit.pickup(t, 0, 'blueium ore'):
                         pass
                     if t.redium_ore > 0 and unit.pickup(t, 0, 'redium ore'):
                         pass
-                if t.unit and t.unit.owner != unit.owner and t.unit.health > 0:
-                    if (t.unit.job.title == "physicist" and t.unit.stun_time == 0 and t.unit.stun_immune == 0 and unit.act(t)):
-                        if unit.acted:
-                            return True
-                    if (enable_attack and unit.moves >= unit.job.moves and unit.attack(t)):
-                        return True
-        elif unit.job.title == 'manager':
-            for t in unit.tile.get_neighbors() + [unit.tile]:
+            elif unit.job.title == 'manager':
                 if t in self.player.generator_tiles:
                     if unit.blueium > 0 and unit.drop(t, 0, 'blueium'):
                         pass
@@ -154,6 +157,32 @@ class AI(BaseAI):
                         pass
                     if t.redium and unit.pickup(t, 0, 'redium'):
                         pass
+                    
+
+    def act(self, unit, enable_attack=True):
+        if unit.acted:
+            return True
+        self.free_actions(unit)
+        if unit.job.title == 'physicist':
+            for t in unit.tile.get_neighbors() + [unit.tile]:
+                if t.machine and (t.machine.ore_type == "blueium" and t.blueium_ore >= t.machine.refine_input or t.machine.ore_type == "redium" and t.redium_ore >= t.machine.refine_input) and unit.act(t):
+                    return True
+                if t.unit and t.unit.owner != unit.owner and t.unit.health > 0:
+                    if (t.unit.job.title == "manager" and t.unit.stun_time == 0 and t.unit.stun_immune == 0 and unit.act(t)):
+                        if unit.acted:
+                            return True
+                    if (enable_attack and unit.moves >= unit.job.moves and unit.attack(t)):
+                        return True
+        elif unit.job.title == 'intern':
+            for t in unit.tile.get_neighbors() + [unit.tile]:
+                if t.unit and t.unit.owner != unit.owner and t.unit.health > 0:
+                    if (t.unit.job.title == "physicist" and t.unit.stun_time == 0 and t.unit.stun_immune == 0 and unit.act(t)):
+                        if unit.acted:
+                            return True
+                    if (enable_attack and unit.moves >= unit.job.moves and unit.attack(t)):
+                        return True
+        elif unit.job.title == 'manager':
+            for t in unit.tile.get_neighbors() + [unit.tile]:
                 if t.unit and t.unit.owner != unit.owner and t.unit.health > 0:
                     if (t.unit.job.title == "intern" and t.unit.stun_time == 0 and t.unit.stun_immune == 0 and unit.act(t)):
                         if unit.acted:
@@ -164,9 +193,72 @@ class AI(BaseAI):
 
     def do_stuff(self, unit):
         if unit is not None and unit.tile is not None and unit.stun_time <= 0 and not unit.acted and unit.moves:
-            if unit.job.title == 'physicist':
+            cost = manhattan
+            if self.player.time_remaining > 10**10:
+                costs = self.cost_map(unit)
+                cost = lambda _,n: costs[n]
+            
+            if unit.job.title == "manager" and unit.redium or unit.blueium:
+                # RUN HOME, DON'T LOOK BACK
+                goal = lambda tile: tile in self.player.generator_tiles
+                
+                path = self.a_star(unit.tile, goal, goal_impassible=False,cost=cost)
+                while unit.moves > 0 and path:
+                    self.free_actions(unit)
+                    if not unit.move(path.pop()):
+                        break
+                self.free_actions(unit)
+
+            if unit.job.title == "manager" and unit.blueium + unit.redium < unit.job.carry_limit and any(manhattan(unit.tile, tile) <= unit.moves + 1 for tile in self.game.tiles if tile.blueium or tile.redium):
+                # Grab it and run
+                goal = lambda tile: (tile.blueium or tile.redium)
+
+                path = self.a_star(unit.tile, goal, goal_impassible=False,cost=cost)
+                while unit.moves and path:
+                    self.free_actions(unit)
+                    if not unit.move(path.pop()):
+                        break
+            
+            if unit.job.title == "manager" and unit.redium or unit.blueium:
+                # RUN HOME, DON'T LOOK BACK
+                goal = lambda tile: tile in self.player.generator_tiles
+                
+                path = self.a_star(unit.tile, goal, goal_impassible=False,cost=cost)
+                while unit.moves > 0 and path:
+                    self.free_actions(unit)
+                    if not unit.move(path.pop()):
+                        break
+                self.free_actions(unit)
+
+
+            if any(manhattan(unit.tile, u2.tile) <= unit.moves + 1 and unit.health == 1 for u2 in self.player.opponent.units if u2.tile and unit.tile):
+                goal = lambda tile: tile.unit and tile.unit.owner != self.player and unit.health == 1
+                path = self.a_star(unit.tile, goal, cost=cost)
+                if len(path) <= unit.moves + 1:
+                    while unit.moves and path:
+                        if not unit.move(path.pop()):
+                            break
+
+            if any(manhattan(unit.tile, u2.tile) <= unit.moves + 1 and counters[u2.job.title] == unit.job.title for u2 in self.player.opponent.units if u2.tile and unit.tile):
+                goal = lambda tile: tile.unit and tile.unit.owner != self.player and counters[tile.unit.job.title] == unit.job.title
+                path = self.a_star(unit.tile, goal, cost=cost)
+                if len(path) <= unit.moves + 1:
+                    while unit.moves and path:
+                        if not unit.move(path.pop()):
+                            break
+                    self.act(unit)
+
+            if False and unit.health <= unit.job.health/3 and unit.blueium_ore + unit.redium_ore + unit.blueium + unit.redium <= 0:
+                goal = lambda tile: tile.owner == self.player and not tile.unit
+                path = self.a_star(unit.tile, goal, goal_impassible=False,cost=cost)
+
+                while unit.moves > 0 and path:
+                    if not unit.move(path.pop()):
+                        break
+
+            elif unit.job.title == 'physicist':
                 goal = lambda tile: tile.machine and tile.blueium_ore + tile.redium_ore >= tile.machine.refine_input
-                path = self.a_star(unit.tile, goal, successor=walkable)
+                path = self.a_star(unit.tile, goal, cost=cost)
                 # move toward a machine if there's one with unrefined ores
                 while unit.moves > 0 and path:
                     if self.act(unit):
@@ -177,20 +269,18 @@ class AI(BaseAI):
                 if not any([goal(m.tile) for m in self.game.machines]):
                     # go harass a manager
                     goal = lambda tile: tile.unit and tile.unit.owner != self.player and tile.unit.job.title == "manager"
-                    path = self.a_star(unit.tile, goal, successor=walkable)
+                    path = self.a_star(unit.tile, goal, cost=cost)
                     while unit.moves > 0 and path:
                         if self.act(unit):
                             return True
                         if not unit.move(path.pop()):
                             break
-
-                self.act(unit)
-
+            
             elif unit.job.title == 'intern':
                 if unit.blueium_ore + unit.redium_ore < unit.job.carry_limit:
                     # gather resources
                     goal = lambda tile: tile.blueium_ore+tile.redium_ore > 0 and tile.machine is None
-                    path = self.a_star(unit.tile, goal, successor=walkable, goal_impassible=False)
+                    path = self.a_star(unit.tile, goal, goal_impassible=False,cost=cost)
                     while unit.moves > 0 and path:
                         if self.act(unit):
                             return True
@@ -199,35 +289,31 @@ class AI(BaseAI):
                 else:
                     # return to reactor
                     goal = lambda tile: tile.owner != self.player.opponent and tile.machine and (tile.machine.ore_type == "blueium" and unit.blueium_ore > 0 or tile.machine.ore_type == "redium" and unit.redium_ore > 0)
-                    path = self.a_star(unit.tile, goal, successor=walkable)
+                    path = self.a_star(unit.tile, goal, cost=cost)
                     while unit.moves > 0 and path:
                         if self.act(unit):
                             return True
                         if not unit.move(path.pop()):
                             break
-                self.act(unit)
-
+            
             elif unit.job.title == 'manager':
                 goal = lambda tile: (tile.blueium or tile.redium)
-                gimp = True
-
-                if unit.blueium + unit.redium < unit.job.carry_limit and any([goal(t) for t in self.game.tiles]):
-                    # seek refined ore
-                    goal = lambda tile: (tile.blueium or tile.redium)
-                elif unit.blueium + unit.redium >= unit.job.carry_limit:
-                    # take to generator
-                    goal = lambda tile: tile in self.player.generator_tiles
-                    gimp = False
-                else:
-                    # harass interns
-                    goal = lambda tile: tile.unit and tile.unit.owner != self.player and tile.unit.health > 0 and tile.unit.job.title == "intern"
-                path = self.a_star(unit.tile, goal, successor=walkable, goal_impassible=gimp)
+                if not unit.redium and not unit.blueium and any(goal(t) for t in self.game.tiles):
+                    path = self.a_star(unit.tile, goal, goal_impassible=False, cost=cost)
+                    while unit.moves > 0 and  path:
+                        self.free_actions(unit)
+                        if not unit.move(path.pop()):
+                            break
+                    self.act(unit)
+                # harass interns
+                goal = lambda tile: tile.unit and tile.unit.owner != self.player and tile.unit.health > 0 and tile.unit.job.title == "intern"
+                path = self.a_star(unit.tile, goal, goal_impassible=True,cost=cost)
                 while unit.moves > 0 and path:
-                    if self.act(unit, enable_attack=gimp):
+                    if self.act(unit):
                         return True
                     if not unit.move(path.pop()):
                         break
-                self.act(unit)
+            self.act(unit)
 
     def run_turn(self):
         """ This is called every time it is this AI.player's turn.
@@ -239,24 +325,35 @@ class AI(BaseAI):
         # Put your game logic here for runTurn
 
         #self.display_map()
+        print(self.player.time_remaining/(10**9))
         for unit in self.player.units:
-            if self.player.time_remaining < 10**6:
+            if self.player.time_remaining < 10**9:
                 return True
             self.do_stuff(unit)
         for unit in self.player.units:
-            if self.player.time_remaining < 10**6:
+            if self.player.time_remaining < 10**9:
                 return True
-            if not unit.acted:
+            i = 3 
+            while unit.tile and unit.moves and not unit.acted and not unit.stun_time and i:
+                i -= 1
                 self.do_stuff(unit)
         
         return True
         # <<-- /Creer-Merge: runTurn -->>
 
-    def a_star(self, start, goal, successor=neighbors, cost=manhattan, heuristic = lambda x: 0, goal_impassible=True):
+    def a_star(self, start, goal, successor=walkable, cost=manhattan, heuristic = lambda x: 0, goal_impassible=True):
         path = []
 
-        if not any([goal(tile) for tile in self.game.tiles]):
+        goal_tiles = [tile for tile in self.game.tiles if goal(tile)]
+        if not goal_tiles:
             return path
+
+        tab = dict()
+        def heuristic(t):
+            if t not in tab:
+                h = min([manhattan(t, t2) for t2 in goal_tiles])
+                tab[t] = h
+            return tab[t]
 
         closed = set()
         parent = {}
